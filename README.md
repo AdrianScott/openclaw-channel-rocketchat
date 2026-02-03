@@ -452,13 +452,26 @@ SECURITY_API_RATE_LIMIT=1000
 SECURITY_WS_RATE_LIMIT=300
 ```
 
-4. **Restart OpenClaw**:
+4. **Check for security vulnerabilities**:
+
+```bash
+# CRITICAL: Always run security audit after updates
+npm audit
+
+# Fix any found vulnerabilities
+npm audit fix
+
+# Verify fixes
+npm audit
+```
+
+5. **Restart OpenClaw**:
 
 ```bash
 systemctl restart openclaw
 ```
 
-5. **Verify functionality**:
+6. **Verify functionality**:
 
 ```bash
 # Check that everything works
@@ -466,6 +479,56 @@ curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
      -H "X-User-Id: $ROCKETCHAT_USER_ID" \
      "$ROCKETCHAT_URL/api/v1/me"
 ```
+
+## 🚨 Security Vulnerability Information
+
+### Current Security Status
+
+This plugin depends on the OpenClaw ecosystem. **Always run security audits** after installation or updates:
+
+```bash
+# Check for vulnerabilities
+npm audit
+
+# Fix vulnerabilities automatically
+npm audit fix
+
+# Force update if needed (use with caution)
+npm audit fix --force
+```
+
+### Known Vulnerabilities
+
+Recent security audits have identified vulnerabilities in transitive dependencies:
+
+- **tar package**: Arbitrary file overwrite vulnerabilities (HIGH severity)
+- **fast-xml-parser**: DoS vulnerabilities (HIGH severity)
+- **hono**: XSS and data exposure vulnerabilities (MODERATE severity)
+
+### Security Best Practices
+
+1. **Before Deployment**:
+   - Always run `npm audit` before deploying
+   - Fix all HIGH and CRITICAL vulnerabilities
+   - Review MODERATE vulnerabilities
+
+2. **Regular Maintenance**:
+   - Run `npm audit` weekly
+   - Keep npm CLI updated: `npm install -g npm@latest`
+   - Monitor security advisories
+
+3. **Production Safety**:
+   - **DO NOT DEPLOY** with unpatched HIGH/CRITICAL vulnerabilities
+   - Implement automated security scanning in CI/CD
+   - Use dependency monitoring tools
+
+For detailed vulnerability information, see [SECURITY_VULNERABILITY_ALERT.md](SECURITY_VULNERABILITY_ALERT.md).
+
+## Configuration
+
+> Use the room **rid** (e.g. `GENERAL`) for per-room settings.
+
+### Minimal (single account)
 
 ```yaml
 plugins:
