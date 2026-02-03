@@ -7,6 +7,163 @@ Neutral, self-host friendly Rocket.Chat channel plugin for **OpenClaw** (Cloudri
 
 - **Inbound:** Rocket.Chat Realtime (DDP/WebSocket) subscribe to `stream-room-messages`
 - **Outbound:** Rocket.Chat REST `chat.postMessage`
+- **Security:** Comprehensive security features including rate limiting, input validation, and error sanitization
+
+## 🚨 Rate Limiting & Monitoring
+
+This plugin includes generous rate limiting with detailed logging to help you monitor usage:
+
+### Default Rate Limits
+
+- **API Requests**: 1,000 requests per minute per user
+- **WebSocket Messages**: 300 messages per 10 seconds per connection
+
+### Rate Limit Logging
+
+When rate limits are approached or exceeded, you'll see clear log messages:
+
+```bash
+# When approaching limits (90% usage)
+[RATE_LIMIT] High usage detected: 900/1000 requests (90.0%)
+
+# When limits are exceeded
+[RATE_LIMIT] user-123: BLOCKED - 1000/1000 requests used. Retry after 45s
+
+# WebSocket rate limiting
+[WS_RATE_LIMIT] conn-abc123: BLOCKED - 300/300 messages used. Retry after 8s
+
+# Detailed status monitoring
+[RATE_LIMIT] user-123: 850/1000 requests used (150 remaining)
+[WS_RATE_LIMIT] conn-abc123: 250/300 messages used (50 remaining)
+```
+
+### Monitoring Rate Limits
+
+To check current rate limit status programmatically:
+
+```typescript
+import {
+  apiRateLimiter,
+  websocketRateLimiter,
+} from "./security/rate-limiting.js";
+
+// Check API rate limit status
+const apiStatus = apiRateLimiter.getStatus("user-123");
+console.log(`API: ${apiStatus.current}/${apiStatus.max} requests used`);
+
+// Check WebSocket rate limit status
+const wsStatus = websocketRateLimiter.getStatus("conn-abc123");
+console.log(`WebSocket: ${wsStatus.current}/${wsStatus.max} messages used`);
+```
+
+### Adjusting Rate Limits
+
+You can easily adjust rate limits through environment variables or configuration:
+
+#### Method 1: Environment Variables (Recommended)
+
+```bash
+# Set environment variables in your .env file
+SECURITY_API_RATE_LIMIT=2000        # API requests per minute
+SECURITY_API_RATE_WINDOW_MS=60000    # API window in milliseconds
+SECURITY_WS_RATE_LIMIT=500           # WebSocket messages per 10 seconds
+SECURITY_WS_RATE_WINDOW_MS=10000     # WebSocket window in milliseconds
+```
+
+#### Method 2: Programmatic Configuration
+
+```typescript
+// For high-traffic applications
+import {
+  apiRateLimiter,
+  websocketRateLimiter,
+} from "./security/rate-limiting.js";
+
+apiRateLimiter.updateConfig({
+  maxRequests: 2000, // Increase to 2000 requests/minute
+  windowMs: 60000, // Keep 1-minute window
+});
+
+websocketRateLimiter.updateConfig({
+  maxRequests: 500, // Increase to 500 messages/10 seconds
+  windowMs: 10000, // Keep 10-second window
+});
+```
+
+#### Method 3: Configuration File
+
+Create a custom security configuration by modifying `src/security/config.ts`:
+
+```typescript
+export const customSecurityConfig: SecurityConfig = {
+  apiRateLimit: {
+    maxRequests: 2000, // Custom API limit
+    windowMs: 60000, // 1 minute window
+  },
+  websocketRateLimit: {
+    maxRequests: 500, // Custom WebSocket limit
+    windowMs: 10000, // 10 second window
+  },
+  // ... other security settings
+};
+```
+
+### Environment-Based Configuration
+
+The plugin automatically adjusts settings based on `NODE_ENV`:
+
+- **Development**: More generous limits and verbose logging
+- **Production**: Stricter security with origin validation enabled
+- **Default**: Balanced settings for general use
+
+```bash
+# Set environment
+NODE_ENV=production
+
+# Production will automatically:
+# - Enable WebSocket origin validation
+# - Use stricter file upload validation
+# - Reduce log verbosity
+# - Maintain rate limits (can be overridden by env vars)
+```
+
+### File Upload Validation
+
+By default, MIME type validation is **disabled** since Rocket.Chat already handles media type validation on the server side. This prevents duplicate validation and potential conflicts.
+
+#### Enabling MIME Type Validation (Optional)
+
+If you want to enable client-side MIME type validation:
+
+```bash
+# Enable MIME type validation (disabled by default)
+SECURITY_ENABLE_MIME_TYPE_VALIDATION=true
+
+# Enable magic number validation (disabled by default)
+SECURITY_ENABLE_MAGIC_NUMBER_VALIDATION=true
+```
+
+**Note**: Enabling these may cause files that are valid on Rocket.Chat to be rejected by the client if they don't match our MIME type lists.
+
+### Log Levels
+
+- **ERROR**: Rate limit exceeded (blocked requests)
+- **WARN**: High usage detected (90%+ usage)
+- **INFO**: New rate limiter created
+- **DEBUG**: Detailed status updates
+
+## 🔒 Security Features
+
+This plugin includes comprehensive security protections:
+
+- ✅ **Input Validation**: All inputs are validated and sanitized
+- ✅ **File Upload Security**: Size limits, type validation, and secure boundaries
+- ✅ **Rate Limiting**: Protection against DoS attacks
+- ✅ **Error Sanitization**: No sensitive information leaked in errors
+- ✅ **WebSocket Security**: Origin validation and message filtering
+- ✅ **HTTPS Enforcement**: Strong HTTPS recommendations
+
+See [Security Documentation](docs/security.md) for detailed security information.
 
 ## Upgrade / rename notice
 
@@ -22,13 +179,293 @@ If you were using the old Clawdbot-era package:
 
 ## Quickstart (5–10 minutes)
 
-1) **Create a Rocket.Chat bot user** (or a dedicated user account) and obtain:
+### Prerequisites
+
+- **OpenClaw** installed and running
+- **Rocket.Chat** server (v6.0+ recommended)
+- **Node.js** 18+ (for development/local testing)
+- **Bot user account** in Rocket.Chat
+
+### Installation
+
+#### Method 1: NPM Package (Recommended for Production)
+
+```bash
+# Install the plugin
+npm install @cloudrise/openclaw-channel-rocketchat
+
+# Or using yarn
+yarn add @cloudrise/openclaw-channel-rocketchat
+```
+
+#### Method 2: Development Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/cloudrise-network/openclaw-channel-rocketchat.git
+cd openclaw-channel-rocketchat
+
+# Install dependencies
+npm install
+
+# Build the plugin (if needed)
+npm run build
+```
+
+### Configuration
+
+1. **Create a Rocket.Chat bot user** (or a dedicated user account) and obtain:
    - `userId`
    - `authToken` (treat like a password)
 
-2) **Add the bot user to the rooms** you want it to monitor (channels/private groups). For DMs, ensure users can message the bot.
+2. **Add the bot user to the rooms** you want it to monitor (channels/private groups). For DMs, ensure users can message the bot.
 
-3) **Install + enable the plugin in OpenClaw**
+3. **Configure OpenClaw** with your Rocket.Chat credentials:
+
+#### Option A: Environment Variables (Recommended)
+
+Create a `.env` file in your OpenClaw directory:
+
+```bash
+# Rocket.Chat Configuration
+ROCKETCHAT_BASE_URL=https://your-rocketchat-instance.com
+ROCKETCHAT_AUTH_TOKEN=your_personal_access_token_here
+ROCKETCHAT_USER_ID=your_user_id_here
+
+# Security Configuration (Optional)
+NODE_ENV=production
+SECURITY_API_RATE_LIMIT=1000
+SECURITY_WS_RATE_LIMIT=300
+SECURITY_LOG_LEVEL=info
+```
+
+#### Option B: OpenClaw Configuration File
+
+Add to your OpenClaw `config.yaml`:
+
+```yaml
+plugins:
+  installs:
+    rocketchat:
+      source: npm
+      spec: "@cloudrise/openclaw-channel-rocketchat"
+  entries:
+    rocketchat:
+      enabled: true
+
+channels:
+  rocketchat:
+    baseUrl: "https://your-rocketchat-instance.com"
+    userId: "<ROCKETCHAT_USER_ID>"
+    authToken: "<ROCKETCHAT_AUTH_TOKEN>"
+
+    # Optional security settings
+    security:
+      apiRateLimit: 1000
+      websocketRateLimit: 300
+      logLevel: "info"
+```
+
+### Server Deployment
+
+#### Production Deployment Steps
+
+1. **Install the plugin** on your server:
+
+```bash
+cd /path/to/openclaw
+npm install @cloudrise/openclaw-channel-rocketchat
+```
+
+2. **Configure environment variables**:
+
+```bash
+# Create production .env file
+cp .env.example .env.local
+
+# Edit with your production values
+nano .env.local
+```
+
+3. **Set production environment**:
+
+```bash
+export NODE_ENV=production
+```
+
+4. **Restart OpenClaw**:
+
+```bash
+# If using systemd
+sudo systemctl restart openclaw
+
+# Or if using PM2
+pm2 restart openclaw
+
+# Or if running directly
+npm restart
+```
+
+#### Docker Deployment
+
+```dockerfile
+# Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+RUN npm install @cloudrise/openclaw-channel-rocketchat
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+CMD ["npm", "start"]
+```
+
+```yaml
+# docker-compose.yml
+version: "3.8"
+services:
+  openclaw:
+    build: .
+    environment:
+      - NODE_ENV=production
+      - ROCKETCHAT_BASE_URL=https://your-rocketchat.com
+      - ROCKETCHAT_AUTH_TOKEN=${ROCKETCHAT_AUTH_TOKEN}
+      - ROCKETCHAT_USER_ID=${ROCKETCHAT_USER_ID}
+      - SECURITY_API_RATE_LIMIT=1000
+      - SECURITY_LOG_LEVEL=warn
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+```
+
+### Verification
+
+1. **Check plugin installation**:
+
+```bash
+# In OpenClaw logs, look for:
+# [INFO] Rocket.Chat plugin loaded successfully
+```
+
+2. **Test connectivity**:
+
+```bash
+# Test API connection
+curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
+     -H "X-User-Id: $ROCKETCHAT_USER_ID" \
+     "$ROCKETCHAT_URL/api/v1/me"
+```
+
+3. **Monitor rate limiting**:
+
+```bash
+# Watch for rate limit logs
+tail -f logs/app.log | grep "RATE_LIMIT"
+```
+
+### Security Configuration for Production
+
+For production deployment, configure these security settings:
+
+```bash
+# Production security settings
+NODE_ENV=production
+SECURITY_API_RATE_LIMIT=1000
+SECURITY_WS_RATE_LIMIT=300
+SECURITY_ALLOWED_ORIGINS=https://yourapp.com,https://*.yourapp.com
+SECURITY_LOG_LEVEL=warn
+SECURITY_MAX_FILE_SIZE=10485760
+SECURITY_ENABLE_MIME_TYPE_VALIDATION=false
+SECURITY_ENABLE_MAGIC_NUMBER_VALIDATION=false
+```
+
+### Troubleshooting Installation
+
+#### Common Issues
+
+1. **Authentication Errors**:
+
+```bash
+# Verify token format
+echo $ROCKETCHAT_AUTH_TOKEN | wc -c  # Should be 24-64 chars
+
+# Test connection
+curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
+     -H "X-User-Id: $ROCKETCHAT_USER_ID" \
+     "$ROCKETCHAT_URL/api/v1/me"
+```
+
+2. **Rate Limit Issues**:
+
+```bash
+# Check rate limit logs
+grep "RATE_LIMIT.*BLOCKED" logs/app.log
+
+# Increase limits if needed
+SECURITY_API_RATE_LIMIT=2000
+```
+
+3. **WebSocket Connection Issues**:
+
+```bash
+# Check WebSocket logs
+grep "WebSocket.*closed\|disconnected" logs/app.log
+
+# Verify origin configuration
+echo $SECURITY_ALLOWED_ORIGINS
+```
+
+#### Getting Help
+
+- **Check logs**: `tail -f logs/app.log`
+- **Verify configuration**: Ensure all environment variables are set
+- **Test connectivity**: Use curl to test API access
+- **Security docs**: See [docs/security.md](docs/security.md)
+
+### Upgrading from Previous Versions
+
+If upgrading from an older version:
+
+1. **Backup configuration**:
+
+```bash
+cp .env .env.backup
+cp config.yaml config.yaml.backup
+```
+
+2. **Install new version**:
+
+```bash
+npm update @cloudrise/openclaw-channel-rocketchat
+```
+
+3. **Review new security settings**:
+
+```bash
+# Add new environment variables to .env
+SECURITY_API_RATE_LIMIT=1000
+SECURITY_WS_RATE_LIMIT=300
+```
+
+4. **Restart OpenClaw**:
+
+```bash
+systemctl restart openclaw
+```
+
+5. **Verify functionality**:
+
+```bash
+# Check that everything works
+curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
+     -H "X-User-Id: $ROCKETCHAT_USER_ID" \
+     "$ROCKETCHAT_URL/api/v1/me"
+```
 
 ```yaml
 plugins:
@@ -53,9 +490,9 @@ channels:
         requireMention: true
 ```
 
-4) **Restart the gateway**.
+4. **Restart the gateway**.
 
-5) **Test** by @mentioning the bot in a room it’s a member of.
+5. **Test** by @mentioning the bot in a room it’s a member of.
 
 ### Example chat commands (reply to a room + model switching)
 
@@ -66,7 +503,7 @@ In Rocket.Chat you can send a normal message, or you can switch the session’s 
 Rocket.Chat treats messages starting with `/` as Rocket.Chat slash-commands.
 So for model switching, either:
 
-- put the directive *after* an @mention (works on most servers/clients), or
+- put the directive _after_ an @mention (works on most servers/clients), or
 - use the plugin’s alternate `--model` / `--<alias>` syntax.
 
 ```text
@@ -156,8 +593,8 @@ Then restart the gateway.
 
 There are two parts:
 
-1) **Switching models in chat** (temporary, per-session) via `/model ...`
-2) **Defining short aliases** like `qwen3` so you don’t have to type the full `provider/model`
+1. **Switching models in chat** (temporary, per-session) via `/model ...`
+2. **Defining short aliases** like `qwen3` so you don’t have to type the full `provider/model`
 
 ### Switching models in chat (`/model`)
 
@@ -202,6 +639,7 @@ openclaw models aliases list
 ```
 
 Notes:
+
 - Model refs are normalized to lowercase.
 - If you define the same alias in config and via CLI, your config value wins.
 
@@ -241,6 +679,7 @@ channels:
 ```
 
 Notes:
+
 - The legacy single-account format (top-level `baseUrl/userId/authToken`) still works and is treated as `accountId: default`.
 - Per-room settings live under each account (e.g. `channels.rocketchat.accounts.prod.rooms`).
 
@@ -260,6 +699,7 @@ channels:
 ```
 
 **Auto rules** (deterministic):
+
 - If the inbound message is already in a thread (`tmid` exists) → reply in that thread
 - Else if the inbound message is “long” (≥280 chars or contains a newline) → reply in a thread
 - Else → reply in channel
@@ -267,6 +707,7 @@ channels:
 ### Per-message overrides
 
 Prefix your message:
+
 - `!thread ...` → force the reply to be posted as a thread reply
 - `!channel ...` → force the reply to be posted in the channel
 
@@ -284,8 +725,87 @@ channels:
 (When using multiple accounts, this can also be set per account at `channels.rocketchat.accounts.<accountId>.typingDelayMs`.)
 
 Typing indicators are emitted via DDP `stream-notify-room` using `<RID>/user-activity`.
+
 - Channel replies emit typing without `tmid` → shows under channel composer
 - Thread replies include `{ tmid: ... }` → shows under thread composer
+
+## 🔧 Troubleshooting
+
+### Rate Limit Issues
+
+If you're seeing rate limit errors in your logs:
+
+```bash
+# Check for rate limit errors
+grep "RATE_LIMIT.*BLOCKED" logs/app.log
+
+# Monitor high usage warnings
+grep "RATE_LIMIT.*High usage" logs/app.log
+
+# Check WebSocket rate limiting
+grep "WS_RATE_LIMIT.*BLOCKED" logs/app.log
+```
+
+**Common Solutions:**
+
+1. **Increase Rate Limits** (if legitimate traffic):
+
+   ```yaml
+   # In your OpenClaw config
+   channels:
+     rocketchat:
+       # Custom rate limits (if supported)
+       rateLimits:
+         api: 2000 # requests per minute
+         websocket: 500 # messages per 10 seconds
+   ```
+
+2. **Monitor Traffic Patterns**:
+
+   ```bash
+   # Check which users are hitting limits
+   grep "RATE_LIMIT.*BLOCKED" logs/app.log | awk '{print $3}' | sort | uniq -c | sort -nr
+
+   # Monitor WebSocket connection patterns
+   grep "WS_RATE_LIMIT" logs/app.log | tail -20
+   ```
+
+3. **Adjust Application Behavior**:
+   - Implement client-side caching to reduce API calls
+   - Batch multiple operations into single requests
+   - Use WebSocket subscriptions instead of polling
+
+### Authentication Issues
+
+```bash
+# Check for authentication errors
+grep "auth.*failed\|unauthorized\|forbidden" logs/app.log
+
+# Verify token format
+echo $ROCKETCHAT_AUTH_TOKEN | wc -c  # Should be 24-64 chars
+```
+
+### Connection Issues
+
+```bash
+# Check WebSocket connection issues
+grep "WebSocket.*closed\|disconnected\|error" logs/app.log
+
+# Check API connectivity
+curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
+     -H "X-User-Id: $ROCKETCHAT_USER_ID" \
+     "$ROCKETCHAT_URL/api/v1/me"
+```
+
+### File Upload Issues
+
+```bash
+# Check file upload errors
+grep "upload.*error\|file.*size\|type.*allowed" logs/app.log
+
+# Verify file size limits
+# Default: 10MB max file size
+```
 
 ## Development
 
@@ -309,21 +829,21 @@ node test-realtime.mjs
 
 Before publishing:
 
-1) Run a quick secret scan (at minimum):
+1. Run a quick secret scan (at minimum):
 
 ```bash
 grep -RIn --exclude-dir=node_modules --exclude=package-lock.json -E "npm_[A-Za-z0-9]+|ghp_[A-Za-z0-9]+|xox[baprs]-|authToken\s*[:=]\s*\"" .
 ```
 
-2) Bump version in `package.json`.
+2. Bump version in `package.json`.
 
-3) Verify the tarball:
+3. Verify the tarball:
 
 ```bash
 npm pack
 ```
 
-4) Publish:
+4. Publish:
 
 ```bash
 npm publish

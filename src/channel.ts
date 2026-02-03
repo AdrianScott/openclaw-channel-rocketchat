@@ -2,10 +2,7 @@
  * Rocket.Chat channel plugin for OpenClaw
  */
 
-import {
-  DEFAULT_ACCOUNT_ID,
-  type ChannelPlugin,
-} from "openclaw/plugin-sdk";
+import { DEFAULT_ACCOUNT_ID, type ChannelPlugin } from "openclaw/plugin-sdk";
 
 import {
   listRocketChatAccountIds,
@@ -15,7 +12,10 @@ import {
 } from "./rocketchat/accounts.js";
 import { normalizeRocketChatBaseUrl } from "./rocketchat/client.js";
 import { monitorRocketChatProvider } from "./rocketchat/monitor.js";
-import { reactMessageRocketChat, sendMessageRocketChat } from "./rocketchat/send.js";
+import {
+  reactMessageRocketChat,
+  sendMessageRocketChat,
+} from "./rocketchat/send.js";
 import { getRocketChatRuntime } from "./runtime.js";
 
 const meta = {
@@ -96,7 +96,9 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
     idLabel: "rocketchatUserId",
     normalizeAllowEntry,
     notifyApproval: async ({ id }) => {
-      console.log(`[rocketchat] User ${id} approved for pairing`);
+      // Sanitize user ID for logging to prevent information disclosure
+      const sanitizedId = id.length > 8 ? `${id.slice(0, 4)}...` : id;
+      console.log(`[rocketchat] User ${sanitizedId} approved for pairing`);
     },
   },
   capabilities: {
@@ -110,7 +112,8 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
   reload: { configPrefixes: ["channels.rocketchat"] },
   config: {
     listAccountIds: (cfg) => listRocketChatAccountIds(cfg),
-    resolveAccount: (cfg, accountId) => resolveRocketChatAccount({ cfg, accountId }),
+    resolveAccount: (cfg, accountId) =>
+      resolveRocketChatAccount({ cfg, accountId }),
     defaultAccountId: (cfg) => resolveDefaultRocketChatAccountId(cfg),
     isConfigured: (account) =>
       Boolean(account.authToken && account.userId && account.baseUrl),
@@ -118,18 +121,23 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(account.authToken && account.userId && account.baseUrl),
+      configured: Boolean(
+        account.authToken && account.userId && account.baseUrl,
+      ),
       authTokenSource: account.authTokenSource,
       baseUrl: account.baseUrl,
     }),
     resolveAllowFrom: ({ cfg, accountId }) =>
-      (resolveRocketChatAccount({ cfg, accountId }).config.allowFrom ?? []).map(String),
+      (resolveRocketChatAccount({ cfg, accountId }).config.allowFrom ?? []).map(
+        String,
+      ),
     formatAllowFrom: ({ allowFrom }) =>
       allowFrom.map((entry) => formatAllowEntry(String(entry))).filter(Boolean),
   },
   security: {
     resolveDmPolicy: ({ cfg, accountId, account }) => {
-      const resolvedAccountId = accountId ?? account.accountId ?? DEFAULT_ACCOUNT_ID;
+      const resolvedAccountId =
+        accountId ?? account.accountId ?? DEFAULT_ACCOUNT_ID;
       const rcConfig = (cfg as Record<string, unknown>).channels?.rocketchat;
       const useAccountPath = Boolean(rcConfig?.accounts?.[resolvedAccountId]);
       const basePath = useAccountPath
@@ -155,7 +163,10 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
   outbound: {
     deliveryMode: "direct",
     chunker: (text, limit) =>
-      getRocketChatRuntime().channel?.text?.chunkMarkdownText?.(text, limit) ?? [text],
+      getRocketChatRuntime().channel?.text?.chunkMarkdownText?.(
+        text,
+        limit,
+      ) ?? [text],
     chunkerMode: "markdown",
     textChunkLimit: 4000,
     resolveTarget: ({ to }) => {
@@ -164,7 +175,7 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
         return {
           ok: false,
           error: new Error(
-            "Delivering to Rocket.Chat requires --to <roomId|#channel|@username>"
+            "Delivering to Rocket.Chat requires --to <roomId|#channel|@username>",
           ),
         };
       }
@@ -213,7 +224,9 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
       accountId: account.accountId,
       name: account.name,
       enabled: account.enabled,
-      configured: Boolean(account.authToken && account.userId && account.baseUrl),
+      configured: Boolean(
+        account.authToken && account.userId && account.baseUrl,
+      ),
       authTokenSource: account.authTokenSource,
       baseUrl: account.baseUrl,
       running: runtime?.running ?? false,
@@ -245,7 +258,8 @@ export const rocketChatPlugin: ChannelPlugin<ResolvedRocketChatAccount> = {
         config: ctx.cfg,
         runtime: ctx.runtime,
         abortSignal: ctx.abortSignal,
-        statusSink: (patch) => ctx.setStatus({ accountId: ctx.accountId, ...patch }),
+        statusSink: (patch) =>
+          ctx.setStatus({ accountId: ctx.accountId, ...patch }),
       });
     },
   },

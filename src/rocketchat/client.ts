@@ -2,6 +2,16 @@
  * Rocket.Chat REST API client
  */
 
+import {
+  createSecureBoundary,
+  validateFileUpload,
+  validateRoomId,
+  validateUsername,
+  sanitizeErrorMessage,
+} from "../security/credentials.js";
+import { apiRateLimiter, withRateLimit } from "../security/rate-limiting.js";
+import { getEnvironmentSecurityConfig } from "../security/config.js";
+
 export type RocketChatClient = {
   baseUrl: string;
   userId: string;
@@ -71,7 +81,9 @@ export function normalizeRocketChatBaseUrl(url?: string): string | null {
   const trimmed = url.trim().replace(/\/+$/, "");
   if (!trimmed) return null;
   try {
-    const parsed = new URL(trimmed.startsWith("http") ? trimmed : `https://${trimmed}`);
+    const parsed = new URL(
+      trimmed.startsWith("http") ? trimmed : `https://${trimmed}`,
+    );
     return `${parsed.protocol}//${parsed.host}`;
   } catch {
     return null;
@@ -81,70 +93,105 @@ export function normalizeRocketChatBaseUrl(url?: string): string | null {
 async function rcFetch<T>(
   client: RocketChatClient,
   path: string,
-  opts: RequestInit = {}
+  opts: RequestInit = {},
 ): Promise<T> {
+  // Check rate limits before making the request
+  const rateLimitKey = `${client.userId}:${client.baseUrl}`;
+  const rateLimitResult = apiRateLimiter.check(rateLimitKey);
+
+  if (!rateLimitResult.allowed) {
+    throw new Error(
+      `Rate limit exceeded. Try again in ${rateLimitResult.retryAfter} seconds.`,
+    );
+  }
+
   const url = `${client.baseUrl}${path}`;
   const headers: Record<string, string> = {
     "X-Auth-Token": client.authToken,
     "X-User-Id": client.userId,
     "Content-Type": "application/json",
-    ...(opts.headers as Record<string, string> ?? {}),
+    ...((opts.headers as Record<string, string>) ?? {}),
   };
   const res = await client.fetch(url, { ...opts, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Rocket.Chat API error ${res.status}: ${text}`);
+    const sanitizedError = sanitizeErrorMessage(
+      `Rocket.Chat API error ${res.status}: ${text}`,
+    );
+    throw new Error(sanitizedError);
   }
   return res.json() as Promise<T>;
 }
 
-export async function fetchRocketChatMe(client: RocketChatClient): Promise<RocketChatUser> {
-  const res = await rcFetch<{ _id: string; username: string; name?: string; success: boolean }>(
-    client,
-    "/api/v1/me"
-  );
+export async function fetchRocketChatMe(
+  client: RocketChatClient,
+): Promise<RocketChatUser> {
+  const res = await rcFetch<{
+    _id: string;
+    username: string;
+    name?: string;
+    success: boolean;
+  }>(client, "/api/v1/me");
   return { _id: res._id, username: res.username, name: res.name };
 }
 
 export async function fetchRocketChatUser(
   client: RocketChatClient,
-  userId: string
+  userId: string,
 ): Promise<RocketChatUser> {
+  // Validate input
+  const validation = validateRoomId(userId);
+  if (!validation.valid) {
+    throw new Error(`Invalid user ID: ${validation.error}`);
+  }
+
   const res = await rcFetch<{ user: RocketChatUser; success: boolean }>(
     client,
-    `/api/v1/users.info?userId=${encodeURIComponent(userId)}`
+    `/api/v1/users.info?userId=${encodeURIComponent(userId)}`,
   );
   return res.user;
 }
 
 export async function fetchRocketChatUserByUsername(
   client: RocketChatClient,
-  username: string
+  username: string,
 ): Promise<RocketChatUser> {
+  // Validate input
+  const validation = validateUsername(username);
+  if (!validation.valid) {
+    throw new Error(`Invalid username: ${validation.error}`);
+  }
+
   const res = await rcFetch<{ user: RocketChatUser; success: boolean }>(
     client,
-    `/api/v1/users.info?username=${encodeURIComponent(username)}`
+    `/api/v1/users.info?username=${encodeURIComponent(username)}`,
   );
   return res.user;
 }
 
 export async function fetchRocketChatRoom(
   client: RocketChatClient,
-  roomId: string
+  roomId: string,
 ): Promise<RocketChatRoom> {
+  // Validate input
+  const validation = validateRoomId(roomId);
+  if (!validation.valid) {
+    throw new Error(`Invalid room ID: ${validation.error}`);
+  }
+
   const res = await rcFetch<{ room: RocketChatRoom; success: boolean }>(
     client,
-    `/api/v1/rooms.info?roomId=${encodeURIComponent(roomId)}`
+    `/api/v1/rooms.info?roomId=${encodeURIComponent(roomId)}`,
   );
   return res.room;
 }
 
 export async function fetchRocketChatChannels(
-  client: RocketChatClient
+  client: RocketChatClient,
 ): Promise<RocketChatRoom[]> {
   const res = await rcFetch<{ channels: RocketChatRoom[]; success: boolean }>(
     client,
-    "/api/v1/channels.list.joined"
+    "/api/v1/channels.list.joined",
   );
   return res.channels;
 }
@@ -159,18 +206,18 @@ export type RocketChatSubscription = {
 };
 
 export async function fetchRocketChatSubscriptions(
-  client: RocketChatClient
+  client: RocketChatClient,
 ): Promise<RocketChatSubscription[]> {
-  const res = await rcFetch<{ update: RocketChatSubscription[]; success: boolean }>(
-    client,
-    "/api/v1/subscriptions.get"
-  );
+  const res = await rcFetch<{
+    update: RocketChatSubscription[];
+    success: boolean;
+  }>(client, "/api/v1/subscriptions.get");
   return res.update ?? [];
 }
 
 export async function createRocketChatDirectMessage(
   client: RocketChatClient,
-  username: string
+  username: string,
 ): Promise<{ rid: string }> {
   const res = await rcFetch<{ room: { rid: string }; success: boolean }>(
     client,
@@ -178,7 +225,7 @@ export async function createRocketChatDirectMessage(
     {
       method: "POST",
       body: JSON.stringify({ username }),
-    }
+    },
   );
   return { rid: res.room.rid };
 }
@@ -191,7 +238,7 @@ export async function postRocketChatMessage(
     text: string;
     tmid?: string;
     attachments?: RocketChatAttachment[];
-  }
+  },
 ): Promise<RocketChatMessage> {
   const payload: Record<string, unknown> = {
     text: opts.text,
@@ -207,7 +254,7 @@ export async function postRocketChatMessage(
     {
       method: "POST",
       body: JSON.stringify(payload),
-    }
+    },
   );
   return res.message;
 }
@@ -215,7 +262,7 @@ export async function postRocketChatMessage(
 export async function sendRocketChatTyping(
   client: RocketChatClient,
   roomId: string,
-  isTyping: boolean
+  isTyping: boolean,
 ): Promise<void> {
   // Rocket.Chat exposes a REST endpoint for typing state in most deployments.
   // If the server doesn't support it (or it changes), callers should treat
@@ -249,15 +296,37 @@ export type RocketChatUploadResult = {
  */
 export async function uploadRocketChatFile(
   client: RocketChatClient,
-  opts: RocketChatUploadOpts
+  opts: RocketChatUploadOpts,
 ): Promise<RocketChatUploadResult> {
+  // Get security configuration
+  const securityConfig = getEnvironmentSecurityConfig();
+
+  // Validate file upload parameters with configuration
+  const validation = validateFileUpload(
+    {
+      fileName: opts.fileName,
+      mimeType: opts.mimeType,
+      fileSize: opts.file.length,
+    },
+    {
+      maxFileSize: securityConfig.fileUpload.maxFileSize,
+      allowedExtensions: securityConfig.fileUpload.allowedExtensions,
+      allowedMimeTypes: securityConfig.fileUpload.allowedMimeTypes,
+      enableMimeTypeValidation:
+        securityConfig.fileUpload.enableMimeTypeValidation,
+    },
+  );
+  if (!validation.valid) {
+    throw new Error(`File upload validation failed: ${validation.error}`);
+  }
+
   // Step 1: Upload file to rooms.media
   const uploadUrl = `${client.baseUrl}/api/v1/rooms.media/${opts.roomId}`;
-  
-  // Build FormData manually for Node.js
-  const boundary = `----OpenClawBoundary${Date.now()}`;
+
+  // Build FormData with secure boundary
+  const boundary = createSecureBoundary();
   const parts: Buffer[] = [];
-  
+
   // Add file part
   const fileHeader = [
     `--${boundary}`,
@@ -269,12 +338,12 @@ export async function uploadRocketChatFile(
   parts.push(Buffer.from(fileHeader));
   parts.push(opts.file);
   parts.push(Buffer.from("\r\n"));
-  
+
   // End boundary
   parts.push(Buffer.from(`--${boundary}--\r\n`));
-  
+
   const uploadBody = Buffer.concat(parts);
-  
+
   const uploadRes = await client.fetch(uploadUrl, {
     method: "POST",
     headers: {
@@ -285,28 +354,31 @@ export async function uploadRocketChatFile(
     },
     body: uploadBody,
   });
-  
+
   if (!uploadRes.ok) {
     const text = await uploadRes.text().catch(() => "");
-    throw new Error(`Rocket.Chat media upload error ${uploadRes.status}: ${text}`);
+    const sanitizedError = sanitizeErrorMessage(
+      `Rocket.Chat media upload error ${uploadRes.status}: ${text}`,
+    );
+    throw new Error(sanitizedError);
   }
-  
-  const uploadData = await uploadRes.json() as { 
-    file: { _id: string; url: string }; 
-    success: boolean 
+
+  const uploadData = (await uploadRes.json()) as {
+    file: { _id: string; url: string };
+    success: boolean;
   };
-  
+
   if (!uploadData.success || !uploadData.file?._id) {
     throw new Error("Rocket.Chat media upload failed: no file ID returned");
   }
-  
+
   // Step 2: Confirm media upload (generates thumbnail, dimensions, etc.)
   const confirmUrl = `${client.baseUrl}/api/v1/rooms.mediaConfirm/${opts.roomId}/${uploadData.file._id}`;
-  
+
   const confirmPayload: Record<string, string> = {};
   if (opts.description) confirmPayload.msg = opts.description;
   if (opts.tmid) confirmPayload.tmid = opts.tmid;
-  
+
   const confirmRes = await client.fetch(confirmUrl, {
     method: "POST",
     headers: {
@@ -316,17 +388,20 @@ export async function uploadRocketChatFile(
     },
     body: JSON.stringify(confirmPayload),
   });
-  
+
   if (!confirmRes.ok) {
     const text = await confirmRes.text().catch(() => "");
-    throw new Error(`Rocket.Chat media confirm error ${confirmRes.status}: ${text}`);
+    const sanitizedError = sanitizeErrorMessage(
+      `Rocket.Chat media confirm error ${confirmRes.status}: ${text}`,
+    );
+    throw new Error(sanitizedError);
   }
-  
-  const confirmData = await confirmRes.json() as { 
-    message: { _id: string; rid: string; ts: string }; 
-    success: boolean 
+
+  const confirmData = (await confirmRes.json()) as {
+    message: { _id: string; rid: string; ts: string };
+    success: boolean;
   };
-  
+
   return {
     _id: confirmData.message._id,
     rid: confirmData.message.rid,
@@ -343,11 +418,13 @@ export async function reactRocketChatMessage(
   client: RocketChatClient,
   messageId: string,
   emoji: string,
-  shouldReact = true
+  shouldReact = true,
 ): Promise<void> {
   // Normalize emoji format - RC accepts "thumbsup", ":thumbsup:", or unicode
-  const normalizedEmoji = emoji.startsWith(":") ? emoji : `:${emoji.replace(/:/g, "")}:`;
-  
+  const normalizedEmoji = emoji.startsWith(":")
+    ? emoji
+    : `:${emoji.replace(/:/g, "")}:`;
+
   const res = await rcFetch<{ success: boolean }>(
     client,
     "/api/v1/chat.react",
@@ -358,9 +435,9 @@ export async function reactRocketChatMessage(
         emoji: normalizedEmoji,
         shouldReact,
       }),
-    }
+    },
   );
-  
+
   if (!res.success) {
     throw new Error("Rocket.Chat reaction failed");
   }

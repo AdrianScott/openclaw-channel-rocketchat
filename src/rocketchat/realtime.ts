@@ -1,11 +1,16 @@
 /**
  * Rocket.Chat Realtime API (DDP/WebSocket) client
- * 
+ *
  * Rocket.Chat uses DDP (Distributed Data Protocol) over WebSocket for realtime
  * features like message streaming, typing indicators, and presence.
  */
 
 import WebSocket from "ws";
+import { sanitizeErrorMessage } from "../security/credentials.js";
+import {
+  checkWebSocketRateLimit,
+  websocketRateLimiter,
+} from "../security/rate-limiting.js";
 
 export type DDPMessage = {
   msg: string;
@@ -26,7 +31,11 @@ export type RealtimeOpts = {
   authToken: string;
   onMessage?: (msg: IncomingMessage) => void;
   /** Low-level notification stream (stream-notify-user / stream-notify-room, etc). */
-  onNotify?: (evt: { collection: string; eventName?: string; args?: unknown[] }) => void;
+  onNotify?: (evt: {
+    collection: string;
+    eventName?: string;
+    args?: unknown[];
+  }) => void;
   onConnect?: () => void;
   onDisconnect?: (reason?: string) => void;
   onError?: (error: Error) => void;
@@ -82,15 +91,18 @@ export class RocketChatRealtime {
   private activeSubIdsByRoom = new Map<string, string>();
 
   private subscriptions = new Map<string, string>();
-  private pingInterval: NodeJS.Timeout | null = null;
-  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private pingInterval: any = null; // Use any to avoid NodeJS namespace issues
+  private reconnectTimeout: any = null;
   private isConnected = false;
   private shouldReconnect = true;
   private reconnectDelayMs = 5_000;
   private readonly reconnectMaxDelayMs = 60_000;
+  private readonly maxMessageSize = 1024 * 1024; // 1MB max message size
+  private connectionId: string;
 
   constructor(opts: RealtimeOpts) {
     this.opts = opts;
+    this.connectionId = `${opts.userId}-${Date.now()}-${Math.random()}`;
   }
 
   private getWsUrl(): string {
@@ -104,6 +116,16 @@ export class RocketChatRealtime {
 
   private send(msg: DDPMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
+      // Check rate limits before sending
+      const rateLimitResult = checkWebSocketRateLimit(this.connectionId);
+
+      if (!rateLimitResult.allowed) {
+        this.opts.logger?.debug?.(
+          `WebSocket rate limit exceeded. Skipping message. Retry in ${rateLimitResult.retryAfter}s`,
+        );
+        return;
+      }
+
       this.ws.send(JSON.stringify(msg));
     }
   }
@@ -134,24 +156,41 @@ export class RocketChatRealtime {
 
       this.ws.on("open", () => {
         // Send DDP connect message
-        this.send({ msg: "connect", version: "1", support: ["1"] } as unknown as DDPMessage);
+        this.send({
+          msg: "connect",
+          version: "1",
+          support: ["1"],
+        } as unknown as DDPMessage);
       });
 
-      this.ws.on("message", async (data) => {
+      this.ws.on("message", async (data: any) => {
         try {
+          // Check message size before parsing
+          if (data.length > this.maxMessageSize) {
+            this.opts.logger?.debug?.(
+              `Message size ${data.length} exceeds limit ${this.maxMessageSize}`,
+            );
+            return;
+          }
+
           const msg = JSON.parse(data.toString()) as DDPMessage;
           await this.handleMessage(msg, resolveOnce);
         } catch (err) {
-          this.opts.logger?.debug?.(`Failed to parse message: ${err}`);
+          const sanitizedError = sanitizeErrorMessage(
+            `Failed to parse message: ${err}`,
+          );
+          this.opts.logger?.debug?.(sanitizedError);
         }
       });
 
-      this.ws.on("close", (_code, reason) => {
+      this.ws.on("close", (_code: any, reason: any) => {
         const reasonStr = reason?.toString();
 
         // If we never fully connected, fail the connect() call so callers can react.
         if (!this.isConnected) {
-          rejectOnce(new Error(reasonStr || "WebSocket closed before DDP connected"));
+          rejectOnce(
+            new Error(reasonStr || "WebSocket closed before DDP connected"),
+          );
         }
 
         this.isConnected = false;
@@ -168,17 +207,21 @@ export class RocketChatRealtime {
         }
       });
 
-      this.ws.on("error", (err) => {
-        this.opts.onError?.(err);
+      this.ws.on("error", (err: any) => {
+        const sanitizedError = sanitizeErrorMessage(err);
+        this.opts.onError?.(new Error(sanitizedError));
         // If we haven't connected yet, fail connect(); otherwise close handler will schedule reconnect.
         if (!this.isConnected) {
-          rejectOnce(err);
+          rejectOnce(new Error(sanitizedError));
         }
       });
     });
   }
 
-  private async handleMessage(msg: DDPMessage, onConnected?: (value: void) => void): Promise<void> {
+  private async handleMessage(
+    msg: DDPMessage,
+    onConnected?: (value: void) => void,
+  ): Promise<void> {
     switch (msg.msg) {
       case "connected":
         this.opts.logger?.debug?.("DDP connected, logging in...");
@@ -250,7 +293,9 @@ export class RocketChatRealtime {
 
       case "ready":
         // Subscription is ready
-        this.opts.logger?.debug?.(`Subscription ready: ${msg.subs?.join(", ")}`);
+        this.opts.logger?.debug?.(
+          `Subscription ready: ${msg.subs?.join(", ")}`,
+        );
         break;
 
       case "nosub":
@@ -292,7 +337,9 @@ export class RocketChatRealtime {
     const id = this.nextId();
     this.activeSubIdsByRoom.set(trimmed, id);
 
-    this.opts.logger?.debug?.(`Subscribing to room: ${trimmed} with sub id: ${id}`);
+    this.opts.logger?.debug?.(
+      `Subscribing to room: ${trimmed} with sub id: ${id}`,
+    );
 
     this.send({
       msg: "sub",
@@ -315,7 +362,9 @@ export class RocketChatRealtime {
     const id = this.nextId();
     this.subscriptions.set(key, id);
 
-    this.opts.logger?.debug?.(`Subscribing to user event: ${eventName} with sub id: ${id}`);
+    this.opts.logger?.debug?.(
+      `Subscribing to user event: ${eventName} with sub id: ${id}`,
+    );
 
     this.send({
       msg: "sub",
@@ -342,7 +391,9 @@ export class RocketChatRealtime {
     if (this.reconnectTimeout) return;
 
     const delay = Math.min(this.reconnectDelayMs, this.reconnectMaxDelayMs);
-    this.opts.logger?.debug?.(`Scheduling reconnect in ${Math.round(delay / 1000)}s...`);
+    this.opts.logger?.debug?.(
+      `Scheduling reconnect in ${Math.round(delay / 1000)}s...`,
+    );
 
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null;
@@ -354,13 +405,20 @@ export class RocketChatRealtime {
     }, delay);
 
     // Backoff to a max of 60s.
-    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.reconnectMaxDelayMs);
+    this.reconnectDelayMs = Math.min(
+      this.reconnectDelayMs * 2,
+      this.reconnectMaxDelayMs,
+    );
   }
 
   disconnect(): void {
     this.shouldReconnect = false;
     this.stopPing();
     this.rejectAllPending(new Error("Disconnected"));
+
+    // Clean up rate limiter for this connection
+    websocketRateLimiter.removeConnection(this.connectionId);
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;

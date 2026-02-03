@@ -3,6 +3,12 @@
  */
 
 import type { OpenclawConfig } from "openclaw/plugin-sdk";
+import {
+  validateAuthToken,
+  validateUserId,
+  validateBaseUrl,
+  sanitizeEnvValue,
+} from "../security/credentials.js";
 
 export type RocketChatReplyMode = "thread" | "channel" | "auto";
 
@@ -48,7 +54,9 @@ export type ResolvedRocketChatAccount = {
 
 const DEFAULT_ACCOUNT_ID = "default";
 
-function getRocketChatConfig(cfg: OpenclawConfig): Record<string, unknown> | undefined {
+function getRocketChatConfig(
+  cfg: OpenclawConfig,
+): Record<string, unknown> | undefined {
   return (cfg as Record<string, unknown>).channels?.rocketchat;
 }
 
@@ -79,40 +87,89 @@ export function resolveRocketChatAccount(opts: {
   accountId?: string;
 }): ResolvedRocketChatAccount {
   const { cfg, accountId: rawAccountId } = opts;
-  const accountId = rawAccountId?.trim() || resolveDefaultRocketChatAccountId(cfg);
+  const accountId =
+    rawAccountId?.trim() || resolveDefaultRocketChatAccountId(cfg);
   const rc = getRocketChatConfig(cfg) ?? {};
 
-  const accounts = rc.accounts as Record<string, RocketChatAccountConfig> | undefined;
+  const accounts = rc.accounts as
+    | Record<string, RocketChatAccountConfig>
+    | undefined;
   const accountConfig = accounts?.[accountId];
 
   // Check for top-level config (default account)
   const isDefaultPath = accountId === DEFAULT_ACCOUNT_ID && !accountConfig;
-  const config: RocketChatAccountConfig = accountConfig ?? (isDefaultPath ? rc : {});
+  const config: RocketChatAccountConfig =
+    accountConfig ?? (isDefaultPath ? rc : {});
 
-  // Resolve auth token from config, env, or file
-  let authToken = config.authToken as string | undefined;
+  // Resolve auth token from config, env, or file with validation
+  let authToken = sanitizeEnvValue(config.authToken as string);
   let authTokenSource: "config" | "env" | "file" | "none" = "none";
 
   if (authToken) {
+    const tokenValidation = validateAuthToken(authToken);
+    if (!tokenValidation.valid) {
+      throw new Error(`Invalid auth token: ${tokenValidation.error}`);
+    }
     authTokenSource = "config";
   } else if (accountId === DEFAULT_ACCOUNT_ID) {
-    const envToken = process.env.ROCKETCHAT_AUTH_TOKEN;
+    const envToken = sanitizeEnvValue(process.env?.ROCKETCHAT_AUTH_TOKEN);
     if (envToken) {
+      const tokenValidation = validateAuthToken(envToken);
+      if (!tokenValidation.valid) {
+        throw new Error(`Invalid env auth token: ${tokenValidation.error}`);
+      }
       authToken = envToken;
       authTokenSource = "env";
     }
   }
 
-  // Resolve user ID from config or env
-  let userId = config.userId as string | undefined;
+  // Resolve user ID from config or env with validation
+  let userId = sanitizeEnvValue(config.userId as string);
   if (!userId && accountId === DEFAULT_ACCOUNT_ID) {
-    userId = process.env.ROCKETCHAT_USER_ID;
+    const envUserId = sanitizeEnvValue(process.env?.ROCKETCHAT_USER_ID);
+    if (envUserId) {
+      const userValidation = validateUserId(envUserId);
+      if (!userValidation.valid) {
+        throw new Error(`Invalid env user ID: ${userValidation.error}`);
+      }
+      userId = envUserId;
+    }
   }
 
-  // Resolve base URL from config or env
-  let baseUrl = config.baseUrl as string | undefined;
+  // Resolve base URL from config or env with validation
+  let baseUrl = sanitizeEnvValue(config.baseUrl as string);
   if (!baseUrl && accountId === DEFAULT_ACCOUNT_ID) {
-    baseUrl = process.env.ROCKETCHAT_URL;
+    const envUrl = sanitizeEnvValue(process.env?.ROCKETCHAT_URL);
+    if (envUrl) {
+      const urlValidation = validateBaseUrl(envUrl);
+      if (!urlValidation.valid) {
+        throw new Error(`Invalid env base URL: ${urlValidation.error}`);
+      }
+      baseUrl = urlValidation.normalized;
+    }
+  }
+
+  // Validate final credentials
+  if (authToken) {
+    const tokenValidation = validateAuthToken(authToken);
+    if (!tokenValidation.valid) {
+      throw new Error(`Invalid auth token: ${tokenValidation.error}`);
+    }
+  }
+
+  if (userId) {
+    const userValidation = validateUserId(userId);
+    if (!userValidation.valid) {
+      throw new Error(`Invalid user ID: ${userValidation.error}`);
+    }
+  }
+
+  if (baseUrl) {
+    const urlValidation = validateBaseUrl(baseUrl);
+    if (!urlValidation.valid) {
+      throw new Error(`Invalid base URL: ${urlValidation.error}`);
+    }
+    baseUrl = urlValidation.normalized;
   }
 
   return {
