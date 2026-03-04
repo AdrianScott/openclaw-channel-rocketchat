@@ -218,17 +218,66 @@ npm run build
    - `userId`
    - `authToken` (treat like a password)
 
+#### Getting `userId` and `authToken`
+
+This plugin uses Rocket.Chat's standard REST auth headers:
+
+- `X-User-Id`: your Rocket.Chat user `_id`
+- `X-Auth-Token`: a Rocket.Chat auth token (either a Personal Access Token (PAT) or a login token)
+
+You can obtain them in a couple of ways:
+
+##### Option 1: Personal Access Token (PAT) (recommended)
+
+1. Log in to Rocket.Chat as the bot user.
+2. Create a PAT in:
+   - Avatar menu
+   - **My Account**
+   - **Personal Access Tokens**
+3. The UI will show you the generated token once. Save it.
+
+To get the matching `userId`, call:
+
+```bash
+curl -sS \
+  -H "X-Auth-Token: <ROCKETCHAT_AUTH_TOKEN>" \
+  -H "X-User-Id: <ROCKETCHAT_USER_ID>" \
+  "https://your-rocketchat-instance.example/api/v1/me"
+```
+
+If you don't yet know the `userId`, use the login method below (it returns `userId`), then switch to a PAT for long-term use.
+
+##### Option 2: Login token (username/password)
+
+If you have the bot username/password but not a token yet, you can obtain a token via the REST API:
+
+```bash
+curl -sS \
+  -H "Content-Type: application/json" \
+  -d '{"user":"<BOT_USERNAME>","password":"<BOT_PASSWORD>"}' \
+  "https://your-rocketchat-instance.example/api/v1/login"
+```
+
+The response includes:
+
+- `data.userId`
+- `data.authToken`
+
+Treat the login token like a password (store it securely). In most deployments, a PAT is easier to manage and revoke.
+
 2. **Add the bot user to the rooms** you want it to monitor (channels/private groups). For DMs, ensure users can message the bot.
 
 3. **Configure OpenClaw** with your Rocket.Chat credentials:
 
 #### Option A: Environment Variables (Recommended)
 
-Create a `.env` file in your OpenClaw directory:
+Store secrets in an env file (recommended). OpenClaw supports env-based configuration; use `.env.local` for local deployments and keep secrets out of `openclaw.json`.
+
+Create a `.env.local` file in your OpenClaw directory:
 
 ```bash
 # Rocket.Chat Configuration
-ROCKETCHAT_BASE_URL=https://your-rocketchat-instance.com
+ROCKETCHAT_URL=https://your-rocketchat-instance.com
 ROCKETCHAT_AUTH_TOKEN=your_personal_access_token_here
 ROCKETCHAT_USER_ID=your_user_id_here
 
@@ -239,31 +288,84 @@ SECURITY_WS_RATE_LIMIT=300
 SECURITY_LOG_LEVEL=info
 ```
 
+If you're running the OpenClaw gateway via systemd (or another service manager), ensure it loads `.env.local` (or exports these variables in the unit/service environment).
+
 #### Option B: OpenClaw Configuration File
 
-Add to your OpenClaw `config.yaml`:
+OpenClaw uses `~/.openclaw/openclaw.json`.
 
-```yaml
-plugins:
-  installs:
-    rocketchat:
-      source: npm
-      spec: "@cloudrise/openclaw-channel-rocketchat"
-  entries:
-    rocketchat:
-      enabled: true
+##### NPM install example
 
-channels:
-  rocketchat:
-    baseUrl: "https://your-rocketchat-instance.com"
-    userId: "<ROCKETCHAT_USER_ID>"
-    authToken: "<ROCKETCHAT_AUTH_TOKEN>"
+```json
+{
+  "plugins": {
+    "installs": {
+      "rocketchat": {
+        "source": "npm",
+        "spec": "@cloudrise/openclaw-channel-rocketchat"
+      }
+    },
+    "entries": {
+      "rocketchat": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "rocketchat": {
+      "baseUrl": "https://your-rocketchat-instance.com",
+      "replyMode": "auto"
+    }
+  }
+}
+```
 
-    # Optional security settings
-    security:
-      apiRateLimit: 1000
-      websocketRateLimit: 300
-      logLevel: "info"
+##### Local dev/fork load example (via `rocketchat.ts`)
+
+If you're loading a local checkout (and want to avoid plugin id mismatch warnings), point `plugins.load.paths` at the file entry:
+
+```json
+{
+  "plugins": {
+    "load": {
+      "paths": ["/absolute/path/to/openclaw-channel-rocketchat/rocketchat.ts"]
+    },
+    "entries": {
+      "rocketchat": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "rocketchat": {
+      "baseUrl": "https://your-rocketchat-instance.com",
+      "replyMode": "channel"
+    }
+  }
+}
+```
+
+You can also set these values via CLI:
+
+```bash
+openclaw config set channels.rocketchat.replyMode '"channel"' --json
+```
+
+#### Test Rocket.Chat connectivity
+
+Before restarting the gateway, you can validate that your `userId` + `authToken` work against Rocket.Chat:
+
+```bash
+curl -sS \
+  -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
+  -H "X-User-Id: $ROCKETCHAT_USER_ID" \
+  "$ROCKETCHAT_URL/api/v1/me"
+```
+
+Then verify from OpenClaw (gateway must be running):
+
+```bash
+openclaw channels status --probe
 ```
 
 ### Server Deployment
@@ -333,7 +435,7 @@ services:
     build: .
     environment:
       - NODE_ENV=production
-      - ROCKETCHAT_BASE_URL=https://your-rocketchat.com
+      - ROCKETCHAT_URL=https://your-rocketchat.com
       - ROCKETCHAT_AUTH_TOKEN=${ROCKETCHAT_AUTH_TOKEN}
       - ROCKETCHAT_USER_ID=${ROCKETCHAT_USER_ID}
       - SECURITY_API_RATE_LIMIT=1000
@@ -392,7 +494,7 @@ SECURITY_ENABLE_MAGIC_NUMBER_VALIDATION=false
 
 ```bash
 # Verify token format
-echo $ROCKETCHAT_AUTH_TOKEN | wc -c  # Should be 24-64 chars
+echo $ROCKETCHAT_AUTH_TOKEN | wc -c
 
 # Test connection
 curl -H "X-Auth-Token: $ROCKETCHAT_AUTH_TOKEN" \
@@ -435,7 +537,6 @@ If upgrading from an older version:
 
 ```bash
 cp .env .env.backup
-cp config.yaml config.yaml.backup
 ```
 
 2. **Install new version**:
