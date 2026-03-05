@@ -23,7 +23,7 @@ export function validateAuthToken(token: string): {
   // Rocket.Chat personal access tokens are typically 24-64 characters
   // JWT tokens are typically 3 parts separated by dots
   const tokenPatterns = [
-    /^[A-Za-z0-9]{24,64}$/, // Personal access token pattern
+    /^[A-Za-z_0-9]{24,64}$/, // Personal access token pattern
     /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, // JWT pattern
   ];
 
